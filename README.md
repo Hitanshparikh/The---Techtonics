@@ -1,4 +1,4 @@
-# AI Coastal Threat Alert System
+# The Techtonics - Coastal Threat Alert System
 
 A comprehensive full-stack application for monitoring coastal threats using AI/ML, real-time data ingestion, and automated alert systems.
 
@@ -228,5 +228,3 @@ For issues and questions:
 - Mobile app (React Native)
 - Integration with weather APIs
 - Advanced notification channels
-
-
