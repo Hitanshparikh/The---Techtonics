@@ -51,7 +51,7 @@ Thumbs.db
 *.log
 logs/
 
-# Node.js
+# Node.js - IMPORTANT: Exclude node_modules for future commits
 node_modules/
 npm-debug.log*
 yarn-debug.log*
@@ -81,3 +81,6 @@ backend/data/uploads/*
 # Temporary files
 *.tmp
 *.temp
+
+# Large files that should be excluded in future commits
+frontend/node_modules/
