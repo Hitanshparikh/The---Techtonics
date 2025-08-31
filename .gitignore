@@ -19,17 +19,14 @@ wheels/
 *.egg-info/
 .installed.cfg
 
-# Database files (exclude large data)
-*.db
-*.sqlite
-*.sqlite3
+# Essential data files are now included for proper application functionality
+# Only exclude very large datasets and uploads folder
 
-# Large datasets and CSV files
-*.csv
+# Very large datasets only
+large_test_data.csv
+# Exclude uploads folder (user-uploaded files)
 data/uploads/
 backend/data/uploads/
-large_test_data.csv
-test_coastal_data.csv
 
 # Node.js
 node_modules/
