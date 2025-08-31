@@ -400,4 +400,73 @@ export const testAlertSystem = async (data: {
   }
 };
 
+// SMS Subscription API
+export const subscribeSMS = async (subscriptionData: {
+  phone_number: string;
+  name?: string;
+}) => {
+  const response = await fetch(`${API_BASE_URL}/api/v1/sms/subscribe`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(subscriptionData),
+  });
+
+  if (!response.ok) {
+    throw new Error(`SMS subscription failed: ${response.status} ${response.statusText}`);
+  }
+
+  return await response.json();
+};
+
+export const unsubscribeSMS = async (phoneNumber: string) => {
+  const response = await fetch(`${API_BASE_URL}/api/v1/sms/unsubscribe`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ phone_number: phoneNumber }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`SMS unsubscribe failed: ${response.status} ${response.statusText}`);
+  }
+
+  return await response.json();
+};
+
+export const getSMSSubscribers = async () => {
+  const response = await fetch(`${API_BASE_URL}/api/v1/sms/subscribers`);
+
+  if (!response.ok) {
+    throw new Error(`Failed to fetch SMS subscribers: ${response.status} ${response.statusText}`);
+  }
+
+  return await response.json();
+};
+
+export const sendBulkSMS = async (smsData: {
+  message: string;
+  message_type?: string;
+}) => {
+  const response = await fetch(`${API_BASE_URL}/api/v1/sms/send-bulk`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(smsData),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Bulk SMS sending failed: ${response.status} ${response.statusText}`);
+  }
+
+  return await response.json();
+};
+
+export const getSMSStats = async () => {
+  const response = await fetch(`${API_BASE_URL}/api/v1/sms/stats`);
+
+  if (!response.ok) {
+    throw new Error(`Failed to fetch SMS stats: ${response.status} ${response.statusText}`);
+  }
+
+  return await response.json();
+};
+
 

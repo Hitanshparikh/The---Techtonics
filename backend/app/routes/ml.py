@@ -3,6 +3,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List, Optional, Dict, Any
 import logging
 import os
+import json
+from datetime import datetime
 
 from app.core.database import get_db
 from app.services.ml_service import ml_service
@@ -18,59 +20,101 @@ async def analyze_dataset(
 ):
     """Get AI analysis results for an uploaded dataset"""
     try:
-        # Try to load existing analysis result first
-        import json
-        analysis_file = f"/tmp/analysis_{dataset_id}.json"
+        # First, try to load existing analysis result
+        existing_analysis = ml_service.load_analysis_result(dataset_id)
+        if existing_analysis:
+            logger.info(f"Loaded existing analysis for dataset {dataset_id}")
+            return existing_analysis
         
-        try:
-            with open(analysis_file, "r") as f:
-                analysis_result = json.load(f)
-                logger.info(f"Loaded existing analysis for dataset {dataset_id}")
-                return analysis_result
-        except FileNotFoundError:
-            logger.info(f"No existing analysis found for dataset {dataset_id}, generating new one")
+        # If no existing analysis, check if dataset exists in database
+        from sqlalchemy import select
+        from app.models.data_models import Dataset
         
-        # Check if dataset exists
-        dataset_file = f"/tmp/dataset_{dataset_id}.json"
-        try:
-            with open(dataset_file, "r") as f:
-                dataset_info = json.load(f)
-        except FileNotFoundError:
-            # Generate comprehensive mock analysis for demonstration
-            logger.info(f"Generating mock analysis for dataset {dataset_id}")
+        dataset_query = select(Dataset).where(Dataset.id == dataset_id)
+        dataset_result = await db.execute(dataset_query)
+        dataset = dataset_result.scalar_one_or_none()
+        
+        if not dataset:
+            logger.warning(f"Dataset {dataset_id} not found, generating mock analysis")
             return generate_mock_analysis(dataset_id)
         
-        # Load the actual dataset if available
-        if dataset_info.get("file_path") and os.path.exists(dataset_info["file_path"]):
+        # Load the actual dataset file if available
+        if dataset.file_path and os.path.exists(dataset.file_path):
             import pandas as pd
             
-            file_path = dataset_info["file_path"]
+            file_path = dataset.file_path
             file_extension = os.path.splitext(file_path)[1].lower()
             
-            if file_extension == ".csv":
-                df = pd.read_csv(file_path)
-            elif file_extension in [".xlsx", ".xls"]:
-                df = pd.read_excel(file_path)
-            else:
+            try:
+                if file_extension == ".csv":
+                    df = pd.read_csv(file_path)
+                elif file_extension in [".xlsx", ".xls"]:
+                    df = pd.read_excel(file_path)
+                else:
+                    logger.warning(f"Unsupported file type: {file_extension}")
+                    return generate_mock_analysis(dataset_id)
+                
+                # Detect schema and perform analysis
+                schema = ml_service.detect_schema(df)
+                analysis_result = ml_service.analyze_dataset(df, schema, dataset_id)
+                
+                logger.info(f"Generated new analysis for dataset {dataset_id}")
+                return analysis_result
+                
+            except Exception as e:
+                logger.error(f"Error processing dataset file {file_path}: {e}")
                 return generate_mock_analysis(dataset_id)
-            
-            # Detect schema and perform analysis
-            schema = ml_service.detect_schema(df)
-            analysis_result = ml_service.analyze_dataset(df, schema, dataset_id)
-            
-            # Save analysis result
-            with open(analysis_file, "w") as f:
-                json.dump(analysis_result, f, default=str)
-            
-            return analysis_result
         else:
-            # Generate mock analysis if file not available
-            return generate_mock_analysis(dataset_id)
-        
+            # Generate analysis based on database records
+            from app.models.data_models import CoastalData
+            
+            coastal_data_query = select(CoastalData).where(CoastalData.dataset_id == dataset_id).limit(1000)
+            coastal_data_result = await db.execute(coastal_data_query)
+            coastal_data_records = coastal_data_result.scalars().all()
+            
+            if coastal_data_records:
+                # Convert to DataFrame for analysis
+                import pandas as pd
+                data_list = []
+                for record in coastal_data_records:
+                    row_data = {
+                        'timestamp': record.timestamp,
+                        'latitude': record.latitude,
+                        'longitude': record.longitude,
+                        'risk_score': record.risk_score,
+                        'anomaly_detected': record.anomaly_detected
+                    }
+                    
+                    # Add data_fields if available
+                    if record.data_fields:
+                        if isinstance(record.data_fields, dict):
+                            row_data.update(record.data_fields)
+                        elif isinstance(record.data_fields, str):
+                            try:
+                                parsed_fields = json.loads(record.data_fields)
+                                row_data.update(parsed_fields)
+                            except:
+                                pass
+                    
+                    data_list.append(row_data)
+                
+                df = pd.DataFrame(data_list)
+                schema = ml_service.detect_schema(df)
+                analysis_result = ml_service.analyze_dataset(df, schema, dataset_id)
+                
+                logger.info(f"Generated analysis from database records for dataset {dataset_id}")
+                return analysis_result
+            else:
+                logger.warning(f"No data found for dataset {dataset_id}")
+                return generate_mock_analysis(dataset_id)
+                
     except Exception as e:
-        logger.error(f"Error analyzing dataset {dataset_id}: {e}")
-        # Return mock analysis as fallback
-        return generate_mock_analysis(dataset_id)
+        logger.error(f"Error in analyze_dataset: {e}")
+        return {
+            "error": str(e),
+            "dataset_id": dataset_id,
+            "analysis_timestamp": datetime.now().isoformat()
+        }
 
 def generate_mock_analysis(dataset_id: str) -> Dict[str, Any]:
     """Generate a comprehensive mock analysis"""
@@ -422,6 +466,19 @@ async def detect_anomalies(
     except Exception as e:
         logger.error(f"Error detecting anomalies: {e}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+@router.get("/ml/correlations/{dataset_id}")
+async def get_real_time_correlations(
+    dataset_id: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """Get real-time correlation analysis for risk factors"""
+    try:
+        correlations = await ml_service.get_real_time_correlations(dataset_id)
+        return correlations
+    except Exception as e:
+        logger.error(f"Error getting correlations for dataset {dataset_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get correlations: {str(e)}")
 
 async def train_model_background(data, model_name: str):
     """Background task for model training"""

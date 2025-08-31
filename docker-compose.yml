@@ -26,7 +26,7 @@ services:
   backend:
     build:
       context: ./backend
-      dockerfile: Dockerfile
+      dockerfile: ../Dockerfile.backend
     container_name: coastal_threats_backend
     environment:
       DATABASE_URL: postgresql://coastal_user:coastal_password@postgres:5432/coastal_threats
@@ -49,7 +49,7 @@ services:
   frontend:
     build:
       context: ./frontend
-      dockerfile: Dockerfile
+      dockerfile: ../Dockerfile.frontend
     container_name: coastal_threats_frontend
     environment:
       REACT_APP_API_URL: http://localhost:8000

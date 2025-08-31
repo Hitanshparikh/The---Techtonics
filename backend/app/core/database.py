@@ -1,57 +1,72 @@
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from sqlalchemy import create_engine, MetaData
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy import MetaData
-from app.core.config import settings
-import logging
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+import aiosqlite
+from .config import settings
+import os
 
-logger = logging.getLogger(__name__)
+# Create SQLite database file path
+DB_PATH = "./coastal_threats.db"
 
-# Convert PostgreSQL URL to async
-ASYNC_DATABASE_URL = settings.DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://")
-
-# Create async engine
+# Create async engine for SQLite
 engine = create_async_engine(
-    ASYNC_DATABASE_URL,
+    f"sqlite+aiosqlite:///{DB_PATH}",
     echo=settings.DEBUG,
-    pool_pre_ping=True,
-    pool_recycle=300,
+    future=True
 )
 
-# Create async session factory
+# Create sync engine for migrations and table creation
+sync_engine = create_engine(
+    f"sqlite:///{DB_PATH}",
+    echo=settings.DEBUG
+)
+
+# Session factory
 AsyncSessionLocal = sessionmaker(
-    engine,
-    class_=AsyncSession,
-    expire_on_commit=False,
+    engine, class_=AsyncSession, expire_on_commit=False
 )
 
-# Create base class for models
+# Sync session factory for SMS operations
+SyncSessionLocal = sessionmaker(bind=sync_engine)
+
+# Base class for models
 Base = declarative_base()
 
 # Metadata for migrations
 metadata = MetaData()
 
-# Dependency to get database session
 async def get_db():
+    """Dependency to get async database session"""
     async with AsyncSessionLocal() as session:
         try:
             yield session
-        except Exception as e:
-            logger.error(f"Database session error: {e}")
-            await session.rollback()
-            raise
         finally:
             await session.close()
 
-# Test database connection
-async def test_db_connection():
+def get_sync_db():
+    """Dependency to get sync database session"""
+    db = SyncSessionLocal()
     try:
-        async with engine.begin() as conn:
-            await conn.run_sync(lambda _: None)
-        logger.info("Database connection successful")
+        yield db
+    finally:
+        db.close()
+
+async def create_tables():
+    """Create all tables"""
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+async def test_db_connection():
+    """Test database connection"""
+    try:
+        async with AsyncSessionLocal() as session:
+            await session.execute("SELECT 1")
         return True
     except Exception as e:
-        logger.error(f"Database connection failed: {e}")
+        print(f"Database connection failed: {e}")
         return False
 
-
+def init_db():
+    """Initialize database with tables (sync version for startup)"""
+    Base.metadata.create_all(bind=sync_engine)

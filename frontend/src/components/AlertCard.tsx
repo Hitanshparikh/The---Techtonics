@@ -12,7 +12,7 @@ interface Alert {
 }
 
 interface AlertCardProps {
-  alert: Alert;
+  alert: Alert & { timeAgo?: string };
 }
 
 const AlertCard: React.FC<AlertCardProps> = ({ alert }) => {
@@ -46,16 +46,7 @@ const AlertCard: React.FC<AlertCardProps> = ({ alert }) => {
     }
   };
 
-  const formatTime = (timestamp: string) => {
-    const date = new Date(timestamp);
-    const now = new Date();
-    const diffInMinutes = Math.floor((now.getTime() - date.getTime()) / (1000 * 60));
-    
-    if (diffInMinutes < 1) return 'Just now';
-    if (diffInMinutes < 60) return `${diffInMinutes}m ago`;
-    if (diffInMinutes < 1440) return `${Math.floor(diffInMinutes / 60)}h ago`;
-    return date.toLocaleDateString();
-  };
+
 
   return (
     <div className="border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow duration-200">
@@ -68,7 +59,7 @@ const AlertCard: React.FC<AlertCardProps> = ({ alert }) => {
         </div>
         <div className="flex items-center space-x-1 text-xs text-gray-500">
           <Clock className="w-3 h-3" />
-          <span>{formatTime(alert.timestamp)}</span>
+          <span>{alert.timeAgo ? alert.timeAgo : ''}</span>
         </div>
       </div>
       

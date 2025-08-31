@@ -3,7 +3,7 @@ import { LucideIcon } from 'lucide-react';
 
 interface StatCardProps {
   title: string;
-  value: string | number;
+  value: React.ReactNode;
   change: string;
   changeType: 'positive' | 'negative' | 'neutral';
   icon: LucideIcon;

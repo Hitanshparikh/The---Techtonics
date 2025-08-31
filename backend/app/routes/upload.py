@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, BackgroundTasks
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, func
 from typing import List, Optional, Dict, Any
 import pandas as pd
 import os
@@ -97,27 +98,17 @@ async def upload_file(
             status="processing"
         )
         
-        # Store dataset in session (simplified for demo)
-        import json
-        with open(f"/tmp/dataset_{dataset.id}.json", "w") as f:
-            json.dump({
-                "id": dataset.id,
-                "name": dataset.name,
-                "description": dataset.description,
-                "schema": schema,
-                "total_records": len(df),
-                "status": "processing",
-                "file_path": file_path
-            }, f)
+        # Save dataset to database
+        db.add(dataset)
+        await db.commit()
+        await db.refresh(dataset)
         
         # Process data in background
         background_tasks.add_task(
             process_uploaded_data,
-            df,
-            schema,
-            dataset,
-            region,
-            db
+            dataset.id,
+            file_path,
+            region
         )
         
         return JSONResponse(
@@ -189,17 +180,33 @@ async def get_upload_status(
 ):
     """Get status of file upload or API ingestion"""
     try:
-        # In production, this would query the database
-        # For now, return mock status
+        # Query the dataset from database
+        dataset_query = select(Dataset).where(Dataset.id == dataset_id)
+        dataset_result = await db.execute(dataset_query)
+        dataset = dataset_result.scalar_one_or_none()
+        
+        if not dataset:
+            raise HTTPException(status_code=404, detail="Dataset not found")
+        
+        # Count processed records
+        processed_count_query = select(func.count(CoastalData.id)).where(CoastalData.dataset_id == dataset_id)
+        processed_result = await db.execute(processed_count_query)
+        processed_records = processed_result.scalar() or 0
+        
+        # Calculate progress percentage
+        progress_percentage = 0
+        if dataset.total_records > 0:
+            progress_percentage = int((processed_records / dataset.total_records) * 100)
         
         return {
             "dataset_id": dataset_id,
-            "status": "completed",
-            "total_records": 150,
-            "processed_records": 150,
-            "errors": 0,
-            "started_at": datetime.now().isoformat(),
-            "completed_at": datetime.now().isoformat()
+            "status": dataset.status,
+            "total_records": dataset.total_records,
+            "processed_records": processed_records,
+            "progress_percentage": progress_percentage,
+            "errors": 0,  # TODO: Track errors separately
+            "started_at": dataset.created_at.isoformat() if dataset.created_at else None,
+            "completed_at": dataset.updated_at.isoformat() if dataset.status == "completed" and dataset.updated_at else None
         }
         
     except Exception as e:
@@ -214,33 +221,35 @@ async def list_datasets(
 ):
     """List all uploaded datasets"""
     try:
-        # Mock datasets for demonstration
-        mock_datasets = [
-            {
-                "id": "1",
-                "name": "Mumbai Coastal Data",
-                "description": "Historical coastal data for Mumbai region",
-                "source_type": "file",
-                "total_records": 1500,
-                "status": "active",
-                "created_at": "2024-01-01T10:00:00",
-                "region": "Mumbai"
-            },
-            {
-                "id": "2",
-                "name": "Gujarat Weather API",
-                "description": "Real-time weather data from Gujarat coast",
-                "source_type": "api",
-                "total_records": 2500,
-                "status": "active",
-                "created_at": "2024-01-01T11:00:00",
-                "region": "Gujarat"
+        # Query actual datasets from database
+        datasets_query = select(Dataset).offset(offset).limit(limit)
+        datasets_result = await db.execute(datasets_query)
+        datasets = datasets_result.scalars().all()
+        
+        # Count total datasets
+        count_query = select(func.count(Dataset.id))
+        count_result = await db.execute(count_query)
+        total_count = count_result.scalar()
+        
+        # Convert to response format
+        dataset_list = []
+        for dataset in datasets:
+            dataset_dict = {
+                "id": dataset.id,
+                "name": dataset.name,
+                "description": dataset.description,
+                "source_type": dataset.source_type,
+                "total_records": dataset.total_records,
+                "status": dataset.status,
+                "created_at": dataset.created_at.isoformat() if dataset.created_at else None,
+                "updated_at": dataset.updated_at.isoformat() if dataset.updated_at else None,
+                "schema": dataset.schema
             }
-        ]
+            dataset_list.append(dataset_dict)
         
         return {
-            "datasets": mock_datasets[offset:offset + limit],
-            "total_count": len(mock_datasets),
+            "datasets": dataset_list,
+            "total_count": total_count,
             "limit": limit,
             "offset": offset
         }
@@ -267,116 +276,152 @@ async def delete_dataset(
         logger.error(f"Error deleting dataset: {e}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
-async def process_uploaded_data(
-    df: pd.DataFrame,
-    schema: Dict[str, Any],
-    dataset: Dataset,
-    region: Optional[str],
-    db: AsyncSession
-):
+async def process_uploaded_data(dataset_id: str, file_path: str, region: Optional[str] = None):
     """Background task to process uploaded data"""
-    try:
-        logger.info(f"Processing uploaded data for dataset {dataset.id}")
-        
-        # Perform comprehensive AI analysis
-        analysis_result = ml_service.analyze_dataset(df, schema, dataset.id)
-        
-        # Save analysis result
-        import json
-        analysis_file = f"/tmp/analysis_{dataset.id}.json"
-        with open(analysis_file, "w") as f:
-            json.dump(analysis_result, f, default=str)
-        
-        # Train ML model on the data
-        model_metadata = ml_service.train_model(df, schema, f"dataset_{dataset.id}")
-        
-        # Process each row and store in database
-        processed_records = 0
-        errors = 0
-        
-        for _, row in df.iterrows():
-            try:
-                # Extract location data
-                lat = row.get('latitude', row.get('lat', None))
-                lng = row.get('longitude', row.get('lng', row.get('lon', None)))
-                
-                # Create coastal data record
-                coastal_data = {
-                    "id": str(uuid.uuid4()),
-                    "dataset_id": dataset.id,
-                    "timestamp": row.get('timestamp', datetime.now()),
-                    "latitude": lat,
-                    "longitude": lng,
-                    "data_fields": row.to_dict(),
-                    "risk_score": row.get('risk_score', 0.5),
-                    "anomaly_detected": False
-                }
-                
-                # Make prediction using trained model
-                try:
-                    prediction = ml_service.predict(row.to_dict(), f"dataset_{dataset.id}")
-                    coastal_data["risk_score"] = prediction.get("predicted_value", 0.5)
-                except Exception as e:
-                    logger.warning(f"Error making prediction for row: {e}")
-                
-                # Check for anomalies
-                if schema.get('potential_features'):
-                    try:
-                        anomalies = ml_service.detect_anomalies(df, schema['potential_features'])
-                        if len(anomalies) > 0:
-                            coastal_data["anomaly_detected"] = anomalies[processed_records] if processed_records < len(anomalies) else False
-                    except Exception as e:
-                        logger.warning(f"Error detecting anomalies: {e}")
-                
-                # In production, save to database
-                processed_records += 1
-                
-            except Exception as e:
-                logger.error(f"Error processing row {processed_records}: {e}")
-                errors += 1
-        
-        # Update dataset status
-        dataset.status = "completed"
-        dataset.total_records = processed_records
-        
-        # Update stored dataset info
-        with open(f"/tmp/dataset_{dataset.id}.json", "r") as f:
-            dataset_info = json.load(f)
-        dataset_info["status"] = "completed"
-        dataset_info["processed_records"] = processed_records
-        dataset_info["analysis_file"] = analysis_file
-        with open(f"/tmp/dataset_{dataset.id}.json", "w") as f:
-            json.dump(dataset_info, f)
-        
-        logger.info(f"Dataset {dataset.id} processing completed. Processed: {processed_records}, Errors: {errors}")
-        
-        # Trigger alerts if high-risk data detected
-        if analysis_result.get("risk_level") == "HIGH":
-            try:
-                await notification_service.process_risk_alerts(
-                    {
-                        "risk_score": 0.85,
-                        "location": region or "Uploaded Dataset",
-                        "alert_type": "high_risk_upload",
-                        "message": f"High-risk patterns detected in uploaded dataset {dataset.name}"
-                    },
-                    BackgroundTasks()
-                )
-            except Exception as e:
-                logger.warning(f"Error sending risk alerts: {e}")
-        
-    except Exception as e:
-        logger.error(f"Error processing uploaded data: {e}")
-        dataset.status = "failed"
-        # Update stored dataset info
+    # Get a new database session for the background task
+    from app.core.database import AsyncSessionLocal
+    from sqlalchemy import select
+    
+    async with AsyncSessionLocal() as db:
         try:
-            with open(f"/tmp/dataset_{dataset.id}.json", "r") as f:
-                dataset_info = json.load(f)
-            dataset_info["status"] = "failed"
-            dataset_info["error"] = str(e)
-            with open(f"/tmp/dataset_{dataset.id}.json", "w") as f:
-                json.dump(dataset_info, f)
-        except Exception:
-            pass
+            # Get the dataset
+            dataset_query = select(Dataset).where(Dataset.id == dataset_id)
+            dataset_result = await db.execute(dataset_query)
+            dataset = dataset_result.scalar_one_or_none()
+            
+            if not dataset:
+                logger.error(f"Dataset {dataset_id} not found")
+                return
+
+            # Read the uploaded file
+            df = pd.read_csv(file_path)
+            schema = ml_service.detect_schema(df)
+            
+            # Train ML model on the data (optional - skip for now if it causes issues)
+            try:
+                model_metadata = ml_service.train_model(df, schema, f"dataset_{dataset.id}")
+            except Exception as e:
+                logger.warning(f"Error training model: {e}")
+                model_metadata = None
+            
+            # Process each row and store in database
+            processed_records = 0
+            errors = 0
+            
+            # Prepare batch data for bulk insert
+            coastal_data_records = []
+            batch_size = 100  # Process in batches for better performance
+            
+            for idx, (_, row) in enumerate(df.iterrows()):
+                try:
+                    # Extract location data
+                    lat = row.get('latitude', row.get('lat', None))
+                    lng = row.get('longitude', row.get('lng', row.get('lon', None)))
+                    
+                    # Convert timestamp to proper format
+                    timestamp_value = row.get('timestamp', datetime.now())
+                    if hasattr(timestamp_value, 'to_pydatetime'):
+                        # Pandas Timestamp - convert to datetime
+                        timestamp_value = timestamp_value.to_pydatetime()
+                    elif isinstance(timestamp_value, str):
+                        # String timestamp - parse it
+                        try:
+                            timestamp_value = datetime.fromisoformat(timestamp_value.replace('Z', '+00:00'))
+                        except:
+                            timestamp_value = datetime.now()
+                    
+                    # Convert data_fields to serializable format
+                    data_fields = {}
+                    for key, value in row.to_dict().items():
+                        if hasattr(value, 'to_pydatetime'):
+                            # Convert pandas Timestamp to string
+                            data_fields[key] = value.strftime('%Y-%m-%d %H:%M:%S')
+                        elif hasattr(value, 'item'):
+                            # Convert numpy types to Python types
+                            data_fields[key] = value.item()
+                        else:
+                            data_fields[key] = value
+                    
+                    # Simple risk score calculation (skip expensive ML for now)
+                    risk_score = row.get('risk_score', 0.5)
+                    
+                    # Simple anomaly detection based on risk score thresholds
+                    anomaly_detected = float(risk_score) > 0.8 or float(risk_score) < 0.1
+                    
+                    # Create coastal data record
+                    coastal_data_record = CoastalData(
+                        dataset_id=dataset.id,
+                        timestamp=timestamp_value,
+                        latitude=lat,
+                        longitude=lng, 
+                        data_fields=data_fields,
+                        risk_score=risk_score,
+                        anomaly_detected=anomaly_detected,
+                        created_at=datetime.now()
+                    )
+                    
+                    coastal_data_records.append(coastal_data_record)
+                    processed_records += 1
+                    
+                    # Bulk insert every batch_size records
+                    if len(coastal_data_records) >= batch_size:
+                        db.add_all(coastal_data_records)
+                        await db.commit()
+                        coastal_data_records = []  # Clear the batch
+                        
+                        # Update progress and broadcast to WebSocket
+                        progress = int((processed_records / len(df)) * 100)
+                        logger.info(f"Processing progress: {progress}% ({processed_records}/{len(df)} records)")
+                        
+                        # Broadcast progress update via WebSocket
+                        try:
+                            # Skip WebSocket for now - focus on improving performance first
+                            pass
+                        except Exception as e:
+                            logger.warning(f"Failed to broadcast progress: {e}")
+                    
+                except Exception as e:
+                    logger.error(f"Error processing row {processed_records}: {e}")
+                    errors += 1
+            
+            # Insert any remaining records
+            if coastal_data_records:
+                db.add_all(coastal_data_records)
+                await db.commit()
+            
+            # Update dataset status
+            dataset.status = "completed"
+            dataset.total_records = processed_records
+            
+            # Final commit for dataset status
+            await db.commit()
+            await db.refresh(dataset)
+            
+            # Trigger ML analysis for the completed dataset
+            try:
+                logger.info(f"Starting ML analysis for dataset {dataset.id}")
+                # Re-read the file for ML analysis
+                df = pd.read_csv(file_path)
+                schema = ml_service.detect_schema(df)
+                analysis_result = ml_service.analyze_dataset(df, schema, dataset.id)
+                logger.info(f"ML analysis completed for dataset {dataset.id}")
+            except Exception as ml_error:
+                logger.error(f"Error in ML analysis for dataset {dataset.id}: {ml_error}")
+                # Don't fail the entire upload process if ML analysis fails
+            
+            logger.info(f"Dataset {dataset.id} processing completed. Processed: {processed_records}, Errors: {errors}")
+            
+        except Exception as e:
+            logger.error(f"Error processing uploaded data: {e}")
+            # Try to update dataset status to failed
+            try:
+                dataset_query = select(Dataset).where(Dataset.id == dataset_id)
+                dataset_result = await db.execute(dataset_query)
+                dataset = dataset_result.scalar_one_or_none()
+                if dataset:
+                    dataset.status = "failed"
+                    await db.commit()
+            except Exception:
+                pass
 
 

@@ -1,0 +1,14 @@
+fastapi
+uvicorn[standard]
+websockets
+sqlalchemy
+aiosqlite
+pydantic
+pandas
+numpy
+scikit-learn
+python-dotenv
+aiofiles
+openpyxl
+httpx
+python-multipart

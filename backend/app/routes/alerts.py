@@ -38,15 +38,15 @@ async def send_alert(
         # Mock contacts for demonstration
         # In production, this would query the database for subscribed contacts
         mock_contacts = [
-            Contact(id="1", name="Emergency Response", phone="+919876543210", email="emergency@coastal.gov"),
-            Contact(id="2", name="Coastal Patrol", phone="+919876543211", email="patrol@coastal.gov"),
-            Contact(id="3", name="Weather Station", phone="+919876543212", email="weather@coastal.gov"),
-            Contact(id="4", name="Local Authority", phone="+919876543213", email="authority@coastal.gov")
+            {"id": "1", "name": "Emergency Response", "phone": "+919876543210", "email": "emergency@coastal.gov", "region": "Mumbai"},
+            {"id": "2", "name": "Coastal Patrol", "phone": "+919876543211", "email": "patrol@coastal.gov", "region": "Gujarat"},
+            {"id": "3", "name": "Weather Station", "phone": "+919876543212", "email": "weather@coastal.gov", "region": "Chennai"},
+            {"id": "4", "name": "Local Authority", "phone": "+919876543213", "email": "authority@coastal.gov", "region": "Mumbai"}
         ]
         
         # Filter by region if specified
         if region:
-            mock_contacts = [c for c in mock_contacts if c.region == region]
+            mock_contacts = [c for c in mock_contacts if c.get('region') == region]
         
         # Send alerts in background
         background_tasks.add_task(
@@ -162,7 +162,7 @@ async def list_contacts(
         
         # Apply filters
         if region:
-            mock_contacts = [c for c in mock_contacts if c["region"] == region]
+            mock_contacts = [c for c in mock_contacts if c.get("region") == region]
         
         # Apply pagination
         total_count = len(mock_contacts)
@@ -379,7 +379,7 @@ async def test_alert_system(
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 async def send_bulk_alerts_background(
-    contacts: List[Contact],
+    contacts: List[Dict[str, str]],
     message: str,
     alert_type: str,
     severity: str,
@@ -389,18 +389,23 @@ async def send_bulk_alerts_background(
     try:
         logger.info(f"Starting background alert sending for {len(contacts)} contacts")
         
-        # Send SMS alerts
+        # Send SMS alerts (includes WhatsApp)
         if "sms" in channels:
-            sms_results = await notification_service.send_bulk_sms(contacts, message, alert_type)
-            logger.info(f"SMS alerts sent: {len(sms_results)}")
+            sms_results = await notification_service.send_bulk_sms(contacts, message)
+            logger.info(f"SMS/WhatsApp alerts sent: {len(sms_results)}")
+            for result in sms_results:
+                if result['result'].get('success'):
+                    method = result['result'].get('method', 'SMS')
+                    logger.info(f"Alert sent via {method} to {result['contact']['name']}")
+                else:
+                    logger.error(f"Failed to send to {result['contact']['name']}: {result['result'].get('error')}")
         
         # Send email alerts
         if "email" in channels:
             email_results = await notification_service.send_bulk_emails(
                 contacts, 
                 f"[{severity.upper()}] {alert_type.replace('_', ' ').title()} Alert", 
-                message, 
-                alert_type
+                message
             )
             logger.info(f"Email alerts sent: {len(email_results)}")
         

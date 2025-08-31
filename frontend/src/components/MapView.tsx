@@ -101,8 +101,11 @@ const MapView: React.FC<MapViewProps> = ({ data, selectedRegion }) => {
             iconAnchor: [10, 10]
           });
 
-          const marker = L.marker([item.latitude, item.longitude], { icon: customIcon })
-            .addTo(mapInstanceRef.current);
+          const marker = L.marker([item.latitude, item.longitude], { icon: customIcon });
+          
+          if (mapInstanceRef.current) {
+            marker.addTo(mapInstanceRef.current);
+          }
 
           // Create popup content
           const popupContent = `
@@ -124,9 +127,15 @@ const MapView: React.FC<MapViewProps> = ({ data, selectedRegion }) => {
       });
 
       // Fit bounds if data exists
-      const bounds = L.latLngBounds(data.map(item => [item.latitude, item.longitude]).filter(coord => coord[0] && coord[1]));
-      if (bounds.isValid()) {
-        mapInstanceRef.current.fitBounds(bounds, { padding: [20, 20] });
+      const coordinates = data
+        .map(item => [item.latitude, item.longitude] as [number, number])
+        .filter(coord => coord[0] && coord[1]);
+      
+      if (coordinates.length > 0) {
+        const bounds = L.latLngBounds(coordinates);
+        if (bounds.isValid() && mapInstanceRef.current) {
+          mapInstanceRef.current.fitBounds(bounds, { padding: [20, 20] });
+        }
       }
     }
 

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Line,
   AreaChart,
@@ -21,18 +21,66 @@ interface AnalysisChartsProps {
 }
 
 const AnalysisCharts: React.FC<AnalysisChartsProps> = ({ analysisData }) => {
-  // Generate sample time series data for visualization
+  const [correlationData, setCorrelationData] = useState<any>(null);
+  const [loading, setLoading] = useState(false);
+
+  // Fetch real-time correlation data
+  useEffect(() => {
+    const fetchCorrelationData = async () => {
+      if (analysisData?.dataset_id) {
+        setLoading(true);
+        try {
+          const response = await fetch(`/api/ml/correlations/${analysisData.dataset_id}`);
+          if (response.ok) {
+            const data = await response.json();
+            setCorrelationData(data);
+          }
+        } catch (error) {
+          console.error('Error fetching correlation data:', error);
+        } finally {
+          setLoading(false);
+        }
+      }
+    };
+
+    fetchCorrelationData();
+  }, [analysisData?.dataset_id]);
+  // Generate sample time series data for visualization with real ML predictions
   const generateTimeSeriesData = () => {
-    return analysisData.predictions?.map((pred: any, index: number) => ({
-      time: pred.time_horizon,
-      riskScore: pred.predicted_value,
-      confidence: pred.confidence,
+    // First try to use forecast data from ml_predictions
+    if (analysisData.ml_predictions?.forecast && analysisData.ml_predictions.forecast.length > 0) {
+      return analysisData.ml_predictions.forecast.map((pred: any) => ({
+        time: `Period ${pred.period}`,
+        riskScore: pred.predicted_value,
+        confidence: pred.confidence_interval ? 
+          (pred.confidence_interval[1] - pred.confidence_interval[0]) / 2 : 
+          analysisData.ml_predictions.confidence || 0.7,
+        timeIndex: pred.period
+      }));
+    }
+    
+    // Fallback to predictions array
+    return analysisData.predictions?.slice(0, 10).map((pred: any, index: number) => ({
+      time: pred.time_horizon || `Period ${index + 1}`,
+      riskScore: pred.predicted_value || pred.risk_score || 0.5,
+      confidence: pred.confidence || 0.7,
       timeIndex: index
     })) || [];
   };
 
-  // Generate risk factor data
+  // Generate risk factor data from real-time correlations
   const generateRiskFactorData = () => {
+    if (correlationData?.risk_impacts && correlationData.risk_impacts.length > 0) {
+      return correlationData.risk_impacts.slice(0, 10).map((factor: any) => ({
+        name: factor.factor.replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase()),
+        correlation: Math.abs(factor.risk_correlation),
+        impact: factor.risk_level === 'HIGH' ? 0.8 : factor.risk_level === 'MEDIUM' ? 0.5 : 0.3,
+        direction: factor.impact_direction,
+        confidence: factor.confidence
+      }));
+    }
+    
+    // Fallback to original data if real-time not available
     return analysisData.risk_analysis?.risk_factors?.map((factor: any) => ({
       name: factor.factor.replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase()),
       correlation: Math.abs(factor.correlation),
@@ -50,16 +98,44 @@ const AnalysisCharts: React.FC<AnalysisChartsProps> = ({ analysisData }) => {
     ];
   };
 
-  // Generate statistical overview data
+  // Generate statistical overview data with real values
   const generateStatisticalData = () => {
     const stats = analysisData.statistical_summary || {};
-    return Object.keys(stats).slice(0, 6).map(key => ({
-      metric: key.replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase()),
-      mean: stats[key]?.mean || 0,
-      std: stats[key]?.std || 0,
-      min: stats[key]?.min || 0,
-      max: stats[key]?.max || 0
-    }));
+    const data: Array<{
+      metric: string;
+      mean: number;
+      std: number;
+      min: number;
+      max: number;
+    }> = [];
+    
+    // Process each statistical feature
+    Object.keys(stats).forEach(key => {
+      if (stats[key] && typeof stats[key] === 'object' && stats[key].mean !== undefined) {
+        data.push({
+          metric: key.replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase()),
+          mean: Number(stats[key].mean) || 0,
+          std: Number(stats[key].std) || 0,
+          min: Number(stats[key].min) || 0,
+          max: Number(stats[key].max) || 0
+        });
+      }
+    });
+    
+    // If no statistical data, create from correlation data
+    if (data.length === 0 && correlationData?.correlations) {
+      correlationData.correlations.slice(0, 6).forEach((corr: any) => {
+        data.push({
+          metric: corr.factor1,
+          mean: Math.abs(corr.correlation),
+          std: Math.abs(corr.correlation) * 0.2,
+          min: 0,
+          max: 1
+        });
+      });
+    }
+    
+    return data.slice(0, 6);
   };
 
   const timeSeriesData = generateTimeSeriesData();
@@ -105,20 +181,62 @@ const AnalysisCharts: React.FC<AnalysisChartsProps> = ({ analysisData }) => {
         </ResponsiveContainer>
       </div>
 
-      {/* Risk Factors Analysis */}
+      {/* Risk Factors Analysis - Real-time */}
       <div className="bg-white p-6 rounded-lg shadow-sm border">
-        <h3 className="text-lg font-semibold mb-4 text-gray-800">
-          Risk Factor Correlation
-        </h3>
-        <ResponsiveContainer width="100%" height={300}>
-          <BarChart data={riskFactorData}>
-            <CartesianGrid strokeDasharray="3 3" />
-            <XAxis dataKey="name" />
-            <YAxis domain={[0, 1]} />
-            <Tooltip formatter={(value: number) => [`${(value * 100).toFixed(1)}%`, 'Correlation']} />
-            <Bar dataKey="correlation" fill="#8B5CF6" />
-          </BarChart>
-        </ResponsiveContainer>
+        <div className="flex justify-between items-center mb-4">
+          <h3 className="text-lg font-semibold text-gray-800">
+            Risk Factor Correlation {correlationData && '(Real-time)'}
+          </h3>
+          {loading && (
+            <div className="text-sm text-blue-600">
+              Loading real-time data...
+            </div>
+          )}
+        </div>
+        
+        {correlationData?.error ? (
+          <div className="text-red-600 text-sm">
+            {correlationData.error}
+          </div>
+        ) : (
+          <ResponsiveContainer width="100%" height={300}>
+            <BarChart data={riskFactorData}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis 
+                dataKey="name" 
+                angle={-45}
+                textAnchor="end"
+                height={100}
+                interval={0}
+              />
+              <YAxis domain={[0, 1]} />
+              <Tooltip 
+                formatter={(value: number, name: string) => {
+                  if (name === 'correlation') {
+                    return [`${(value * 100).toFixed(1)}%`, 'Correlation Strength'];
+                  }
+                  return [value, name];
+                }}
+                labelFormatter={(label) => `Factor: ${label}`}
+              />
+              <Bar 
+                dataKey="correlation" 
+                fill="#8B5CF6"
+                name="correlation"
+              />
+            </BarChart>
+          </ResponsiveContainer>
+        )}
+        
+        {correlationData?.analysis_summary && (
+          <div className="mt-4 text-sm text-gray-600">
+            <div className="grid grid-cols-3 gap-4">
+              <div>Total Factors: {correlationData.analysis_summary.total_factors}</div>
+              <div>Significant Correlations: {correlationData.analysis_summary.significant_correlations}</div>
+              <div>High Risk Factors: {correlationData.analysis_summary.high_risk_factors}</div>
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">

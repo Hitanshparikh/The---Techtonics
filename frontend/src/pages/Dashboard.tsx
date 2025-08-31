@@ -25,13 +25,13 @@ import {
 import toast from 'react-hot-toast';
 
 // Components
-import MapView from '../components/MapView.tsx';
-import RiskChart from '../components/RiskChart.tsx';
-import StatCard from '../components/StatCard.tsx';
-import AlertCard from '../components/AlertCard.tsx';
+import MapView from '../components/MapView';
+import RiskChart from '../components/RiskChart';
+import StatCard from '../components/StatCard';
+import AlertCard from '../components/AlertCard';
 
 // API
-import { fetchCoastalData, getAlertHistory, fetchStatistics, fetchTrends } from '../api/coastalData.ts';
+import { fetchCoastalData, getAlertHistory, fetchStatistics, fetchTrends } from '../api/coastalData';
 
 interface RealtimeAnalysis {
   evacuationRecommendation: {
@@ -797,7 +797,7 @@ const Dashboard: React.FC = () => {
               {timeRange === '24h' ? 'Last 24 Hours' : 'Last 7 Days'}
             </div>
           </div>
-          <RiskChart data={trends?.chart_data || []} />
+          <RiskChart data={trends?.chart_data || []} analysisData={realtimeAnalysis} />
         </div>
 
         {/* Map View */}

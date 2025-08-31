@@ -1,275 +1,471 @@
-import logging
+import asyncio
+import pandas as pd
+import requests
+import json
+import os
 from typing import List, Dict, Any, Optional
 from datetime import datetime
-import json
-import asyncio
-from fastapi import BackgroundTasks
-
-from app.models.alert_models import Alert, Contact, AlertSubscription
-from app.core.config import settings
+from twilio.rest import Client
+from sqlalchemy.orm import Session
+from sqlalchemy import create_engine
+from app.models.subscription_models import PhoneSubscription, SmsLog
+from app.core.database import get_db, engine
+import logging
 
 logger = logging.getLogger(__name__)
 
 class NotificationService:
     def __init__(self):
-        self.sms_enabled = settings.SMS_ENABLED
-        self.email_enabled = settings.EMAIL_ENABLED
-        self.alert_threshold = settings.ALERT_THRESHOLD
+        self.sms_enabled = True
+        self.email_enabled = True
         
-    async def send_sms_alert(self, phone: str, message: str, alert_id: str) -> Dict[str, Any]:
-        """Send SMS alert (mock implementation)"""
+        # Twilio configuration
+        self.twilio_account_sid = os.environ.get("TWILIO_ACCOUNT_SID")
+        self.twilio_auth_token = os.environ.get("TWILIO_AUTH_TOKEN")
+        self.twilio_phone_number = os.environ.get("TWILIO_PHONE_NUMBER")
+        
+        # Initialize Twilio client if credentials are provided
+        if self.twilio_account_sid and self.twilio_auth_token:
+            self.twilio_client = Client(self.twilio_account_sid, self.twilio_auth_token)
+            self.real_sms_enabled = True
+            logger.info("Twilio SMS service initialized")
+        else:
+            self.twilio_client = None
+            self.real_sms_enabled = False
+            logger.warning("Twilio credentials not found - using mock SMS")
+    
+    def get_db_session(self) -> Session:
+        """Get database session"""
+        from app.core.database import sync_engine
+        from sqlalchemy.orm import sessionmaker
+        SessionLocal = sessionmaker(bind=sync_engine)
+        return SessionLocal()
+        
+    async def save_sms_log(self, phone: str, message: str, message_type: str, 
+                          status: str, provider_message_id: str = None, error_message: str = None):
+        """Save SMS log to database"""
         try:
-            # Mock SMS sending - replace with actual SMS API integration
-            logger.info(f"[MOCK SMS] Sending to {phone}: {message}")
-            
-            # Simulate API call delay
-            await asyncio.sleep(0.1)
-            
-            # Mock success response
-            return {
-                "success": True,
-                "message_id": f"sms_{alert_id}",
-                "phone": phone,
-                "status": "delivered",
-                "timestamp": datetime.now().isoformat()
-            }
-            
+            db = self.get_db_session()
+            sms_log = SmsLog(
+                phone_number=phone,
+                message=message,
+                message_type=message_type,
+                status=status,
+                provider_message_id=provider_message_id,
+                error_message=error_message,
+                delivered_at=datetime.now() if status == 'sent' else None
+            )
+            db.add(sms_log)
+            db.commit()
+            db.refresh(sms_log)
+            db.close()
+            return sms_log.id
         except Exception as e:
-            logger.error(f"Error sending SMS to {phone}: {e}")
-            return {
-                "success": False,
-                "error": str(e),
-                "phone": phone,
-                "status": "failed",
-                "timestamp": datetime.now().isoformat()
-            }
-    
-    async def send_email_alert(self, email: str, subject: str, message: str, alert_id: str) -> Dict[str, Any]:
-        """Send email alert (mock implementation)"""
+            logger.error(f"Failed to save SMS log: {e}")
+            if 'db' in locals():
+                db.close()
+            return None
+        
+    async def send_sms_alert(self, phone: str, message: str, message_type: str = "alert") -> Dict[str, Any]:
+        """Send real SMS alert using Twilio"""
         try:
-            # Mock email sending - replace with actual SMTP integration
-            logger.info(f"[MOCK EMAIL] Sending to {email}: {subject}")
-            logger.info(f"[MOCK EMAIL] Content: {message}")
-            
-            # Simulate SMTP delay
-            await asyncio.sleep(0.2)
-            
-            # Mock success response
-            return {
-                "success": True,
-                "message_id": f"email_{alert_id}",
-                "email": email,
-                "status": "sent",
-                "timestamp": datetime.now().isoformat()
-            }
-            
-        except Exception as e:
-            logger.error(f"Error sending email to {email}: {e}")
-            return {
-                "success": False,
-                "error": str(e),
-                "email": email,
-                "status": "failed",
-                "timestamp": datetime.now().isoformat()
-            }
-    
-    async def send_bulk_sms(self, contacts: List[Contact], message: str, alert_type: str) -> List[Dict[str, Any]]:
-        """Send bulk SMS alerts"""
-        results = []
-        
-        for contact in contacts:
-            if contact.phone:
-                result = await self.send_sms_alert(contact.phone, message, f"bulk_{alert_type}")
-                results.append({
-                    "contact_id": contact.id,
-                    "contact_name": contact.name,
-                    "phone": contact.phone,
-                    "result": result
-                })
-        
-        return results
-    
-    async def send_bulk_emails(self, contacts: List[Contact], subject: str, message: str, alert_type: str) -> List[Dict[str, Any]]:
-        """Send bulk email alerts"""
-        results = []
-        
-        for contact in contacts:
-            if contact.email:
-                result = await self.send_email_alert(contact.email, subject, message, f"bulk_{alert_type}")
-                results.append({
-                    "contact_id": contact.id,
-                    "contact_name": contact.name,
-                    "email": contact.email,
-                    "result": result
-                })
-        
-        return results
-    
-    def create_alert_message(self, alert_type: str, severity: str, location: str, risk_score: float) -> str:
-        """Create formatted alert message"""
-        severity_emoji = {
-            "low": "🟢",
-            "medium": "🟡", 
-            "high": "🟠",
-            "critical": "🔴"
-        }
-        
-        emoji = severity_emoji.get(severity.lower(), "⚪")
-        
-        message = f"{emoji} COASTAL THREAT ALERT {emoji}\n\n"
-        message += f"Type: {alert_type.upper()}\n"
-        message += f"Severity: {severity.upper()}\n"
-        message += f"Location: {location}\n"
-        message += f"Risk Score: {risk_score:.2f}\n\n"
-        message += f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-        message += "Please take necessary precautions and monitor the situation."
-        
-        return message
-    
-    def create_email_subject(self, alert_type: str, severity: str, location: str) -> str:
-        """Create email subject line"""
-        return f"[{severity.upper()}] Coastal Threat Alert - {alert_type.title()} in {location}"
-    
-    async def process_risk_alerts(self, risk_data: Dict[str, Any], background_tasks: BackgroundTasks) -> List[Dict[str, Any]]:
-        """Process risk data and trigger alerts if threshold exceeded"""
-        alerts_triggered = []
-        
-        risk_score = risk_data.get('risk_score', 0)
-        location = risk_data.get('location', 'Unknown')
-        alert_type = risk_data.get('alert_type', 'general')
-        
-        if risk_score >= self.alert_threshold:
-            # Determine severity
-            if risk_score >= 0.9:
-                severity = "critical"
-            elif risk_score >= 0.7:
-                severity = "high"
-            elif risk_score >= 0.5:
-                severity = "medium"
+            if self.real_sms_enabled and self.twilio_client:
+                # Send real SMS via Twilio
+                message_obj = self.twilio_client.messages.create(
+                    body=message,
+                    from_=self.twilio_phone_number,
+                    to=phone
+                )
+                
+                # Save to database
+                log_id = await self.save_sms_log(
+                    phone=phone,
+                    message=message,
+                    message_type=message_type,
+                    status="sent",
+                    provider_message_id=message_obj.sid
+                )
+                
+                logger.info(f"Real SMS sent to {phone}: {message[:50]}...")
+                return {
+                    "success": True,
+                    "message_id": message_obj.sid,
+                    "log_id": log_id,
+                    "delivered_at": datetime.now().isoformat(),
+                    "provider": "twilio"
+                }
             else:
-                severity = "low"
-            
-            # Create alert message
-            message = self.create_alert_message(alert_type, severity, location, risk_score)
-            subject = self.create_email_subject(alert_type, severity, location)
-            
-            # Trigger alerts in background
-            background_tasks.add_task(
-                self._trigger_alerts_background,
-                alert_type,
-                severity,
-                message,
-                subject,
-                risk_score,
-                location
+                # Mock SMS for development
+                await asyncio.sleep(1)
+                
+                # Save to database as mock
+                log_id = await self.save_sms_log(
+                    phone=phone,
+                    message=message,
+                    message_type=message_type,
+                    status="sent",
+                    provider_message_id=f"mock_{datetime.now().timestamp()}"
+                )
+                
+                logger.info(f"Mock SMS sent to {phone}: {message[:50]}...")
+                return {
+                    "success": True,
+                    "message_id": f"mock_sms_{datetime.now().timestamp()}",
+                    "log_id": log_id,
+                    "delivered_at": datetime.now().isoformat(),
+                    "provider": "mock"
+                }
+                
+        except Exception as e:
+            # Save error to database
+            await self.save_sms_log(
+                phone=phone,
+                message=message,
+                message_type=message_type,
+                status="failed",
+                error_message=str(e)
             )
             
-            alerts_triggered.append({
-                "alert_type": alert_type,
-                "severity": severity,
-                "risk_score": risk_score,
-                "location": location,
-                "message": message,
-                "triggered_at": datetime.now().isoformat()
-            })
-        
-        return alerts_triggered
+            logger.error(f"Failed to send SMS to {phone}: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+                "provider": "twilio" if self.real_sms_enabled else "mock"
+            }
     
-    async def _trigger_alerts_background(self, alert_type: str, severity: str, message: str, 
-                                       subject: str, risk_score: float, location: str):
-        """Background task to trigger alerts"""
+    async def subscribe_phone_number(self, phone: str, name: str = None) -> Dict[str, Any]:
+        """Subscribe a phone number for SMS alerts"""
         try:
-            # Get active subscriptions for this alert type
-            # This would typically query the database
-            # For now, we'll use mock data
+            db = self.get_db_session()
             
-            # Mock contacts for demonstration
-            mock_contacts = [
-                Contact(id="1", name="Emergency Response", phone="+919876543210", email="emergency@coastal.gov"),
-                Contact(id="2", name="Coastal Patrol", phone="+919876543211", email="patrol@coastal.gov"),
-                Contact(id="3", name="Weather Station", phone="+919876543212", email="weather@coastal.gov")
-            ]
+            # Check if phone number already exists
+            existing = db.query(PhoneSubscription).filter(
+                PhoneSubscription.phone_number == phone
+            ).first()
             
-            # Send SMS alerts
-            if self.sms_enabled:
-                sms_results = await self.send_bulk_sms(mock_contacts, message, alert_type)
-                logger.info(f"SMS alerts sent: {len(sms_results)}")
-            
-            # Send email alerts
-            if self.email_enabled:
-                email_results = await self.send_bulk_emails(mock_contacts, subject, message, alert_type)
-                logger.info(f"Email alerts sent: {len(email_results)}")
-            
-            logger.info(f"Background alert processing completed for {alert_type}")
-            
-        except Exception as e:
-            logger.error(f"Error in background alert processing: {e}")
-    
-    async def import_contacts_from_file(self, file_content: str, file_type: str) -> Dict[str, Any]:
-        """Import contacts from uploaded file (CSV/Excel)"""
-        try:
-            import pandas as pd
-            from io import StringIO
-            
-            if file_type == "csv":
-                df = pd.read_csv(StringIO(file_content))
-            elif file_type in ["xlsx", "xls"]:
-                df = pd.read_excel(StringIO(file_content))
-            else:
-                raise ValueError(f"Unsupported file type: {file_type}")
-            
-            # Validate required columns
-            required_columns = ['name']
-            if not all(col in df.columns for col in required_columns):
-                return {
-                    "success": False,
-                    "error": f"Missing required columns: {required_columns}"
-                }
-            
-            # Process contacts
-            contacts_processed = 0
-            contacts_errors = []
-            
-            for _, row in df.iterrows():
-                try:
-                    contact_data = {
-                        "name": row.get('name', 'Unknown'),
-                        "phone": row.get('phone', ''),
-                        "email": row.get('email', ''),
-                        "region": row.get('region', ''),
-                        "preferences": {
-                            "sms_enabled": row.get('sms_enabled', True),
-                            "email_enabled": row.get('email_enabled', True)
-                        }
+            if existing:
+                if existing.is_active:
+                    db.close()
+                    return {
+                        "success": False,
+                        "error": "Phone number already subscribed",
+                        "subscription_id": existing.id
                     }
-                    
-                    # Validate contact data
-                    if not contact_data["phone"] and not contact_data["email"]:
-                        contacts_errors.append(f"Contact {contact_data['name']} has no phone or email")
-                        continue
-                    
-                    # Here you would typically save to database
-                    # For now, just count as processed
-                    contacts_processed += 1
-                    
-                except Exception as e:
-                    contacts_errors.append(f"Error processing row: {e}")
+                else:
+                    # Reactivate existing subscription
+                    existing.is_active = True
+                    existing.name = name if name else existing.name
+                    existing.updated_at = datetime.now()
+                    db.commit()
+                    subscription_id = existing.id
+            else:
+                # Create new subscription
+                subscription = PhoneSubscription(
+                    phone_number=phone,
+                    name=name,
+                    is_active=True,
+                    receive_alerts=True
+                )
+                db.add(subscription)
+                db.commit()
+                db.refresh(subscription)
+                subscription_id = subscription.id
             
+            db.close()
+            
+            # Send welcome message
+            welcome_result = await self.send_welcome_message(phone, name)
+            
+            logger.info(f"Phone number {phone} subscribed successfully")
             return {
                 "success": True,
-                "contacts_processed": contacts_processed,
-                "contacts_errors": contacts_errors,
-                "total_rows": len(df)
+                "subscription_id": subscription_id,
+                "welcome_sent": welcome_result.get("success", False),
+                "message": "Successfully subscribed to SMS alerts"
             }
             
         except Exception as e:
-            logger.error(f"Error importing contacts: {e}")
+            if 'db' in locals():
+                db.close()
+            logger.error(f"Failed to subscribe phone number {phone}: {e}")
             return {
                 "success": False,
                 "error": str(e)
             }
+    
+    async def send_welcome_message(self, phone: str, name: str = None) -> Dict[str, Any]:
+        """Send welcome SMS to new subscriber"""
+        try:
+            name_part = f" {name}" if name else ""
+            welcome_message = (
+                f"Welcome{name_part}! 🌊 You're now subscribed to Coastal Threat Alerts. "
+                f"You'll receive important notifications about coastal risks, weather alerts, "
+                f"and emergency situations in your area. Reply STOP to unsubscribe."
+            )
+            
+            result = await self.send_sms_alert(phone, welcome_message, "welcome")
+            
+            if result.get("success"):
+                # Mark welcome as sent in database
+                db = self.get_db_session()
+                subscription = db.query(PhoneSubscription).filter(
+                    PhoneSubscription.phone_number == phone
+                ).first()
+                if subscription:
+                    subscription.welcome_sent = True
+                    subscription.last_message_sent = datetime.now()
+                    db.commit()
+                db.close()
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Failed to send welcome message to {phone}: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+    
+    async def get_active_subscribers(self) -> List[Dict[str, Any]]:
+        """Get all active phone subscribers"""
+        try:
+            db = self.get_db_session()
+            subscribers = db.query(PhoneSubscription).filter(
+                PhoneSubscription.is_active == True,
+                PhoneSubscription.receive_alerts == True
+            ).all()
+            
+            result = []
+            for sub in subscribers:
+                result.append({
+                    "id": sub.id,
+                    "phone": sub.phone_number,
+                    "name": sub.name,
+                    "subscribed_at": sub.subscribed_at.isoformat() if sub.subscribed_at else None
+                })
+            
+            db.close()
+            return result
+            
+        except Exception as e:
+            if 'db' in locals():
+                db.close()
+            logger.error(f"Failed to get active subscribers: {e}")
+            return []
+    
+    async def unsubscribe_phone_number(self, phone: str) -> Dict[str, Any]:
+        """Unsubscribe a phone number"""
+        try:
+            db = self.get_db_session()
+            subscription = db.query(PhoneSubscription).filter(
+                PhoneSubscription.phone_number == phone
+            ).first()
+            
+            if subscription:
+                subscription.is_active = False
+                subscription.updated_at = datetime.now()
+                db.commit()
+                db.close()
+                
+                # Send confirmation message
+                await self.send_sms_alert(
+                    phone, 
+                    "You have been unsubscribed from Coastal Threat Alerts. Thank you for using our service.",
+                    "unsubscribe"
+                )
+                
+                return {
+                    "success": True,
+                    "message": "Successfully unsubscribed"
+                }
+            else:
+                db.close()
+                return {
+                    "success": False,
+                    "error": "Phone number not found"
+                }
+                
+        except Exception as e:
+            if 'db' in locals():
+                db.close()
+            logger.error(f"Failed to unsubscribe phone number {phone}: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+            
+    async def send_email_alert(self, email: str, subject: str, message: str) -> Dict[str, Any]:
+        """Send email alert (mock implementation)"""
+        try:
+            # Simulate email sending delay
+            await asyncio.sleep(2)
+            
+            logger.info(f"Email sent to {email}: {subject}")
+            return {
+                "success": True,
+                "message_id": f"email_{datetime.now().timestamp()}",
+                "delivered_at": datetime.now().isoformat()
+            }
+        except Exception as e:
+            logger.error(f"Failed to send email: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+            
+    async def send_bulk_sms(self, contacts: List[Dict[str, str]], message: str) -> List[Dict[str, Any]]:
+        """Send bulk SMS alerts to contacts"""
+        results = []
+        for contact in contacts:
+            if contact.get('phone'):
+                result = await self.send_sms_alert(contact['phone'], message, "alert")
+                result['method'] = 'SMS'
+                results.append({
+                    "contact": contact,
+                    "result": result
+                })
+        return results
 
-# Global notification service instance
+    async def send_bulk_sms_to_subscribers(self, message: str, message_type: str = "alert") -> Dict[str, Any]:
+        """Send SMS to all active subscribers"""
+        try:
+            subscribers = await self.get_active_subscribers()
+            results = []
+            success_count = 0
+            failure_count = 0
+            
+            for subscriber in subscribers:
+                result = await self.send_sms_alert(
+                    subscriber['phone'], 
+                    message, 
+                    message_type
+                )
+                
+                if result.get("success"):
+                    success_count += 1
+                else:
+                    failure_count += 1
+                    
+                results.append({
+                    "subscriber": subscriber,
+                    "result": result
+                })
+            
+            return {
+                "success": True,
+                "total_sent": len(subscribers),
+                "success_count": success_count,
+                "failure_count": failure_count,
+                "results": results
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to send bulk SMS to subscribers: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+        
+    async def send_bulk_emails(self, contacts: List[Dict[str, str]], subject: str, message: str) -> List[Dict[str, Any]]:
+        """Send bulk email alerts"""
+        results = []
+        for contact in contacts:
+            if contact.get('email'):
+                result = await self.send_email_alert(contact['email'], subject, message)
+                results.append({
+                    "contact": contact,
+                    "result": result
+                })
+        return results
+        
+    def create_alert_message(self, alert_type: str, location: str, risk_score: float) -> str:
+        """Create formatted alert message"""
+        risk_percentage = int(risk_score * 100)
+        
+        if risk_score > 0.9:
+            severity = "CRITICAL"
+            action = "IMMEDIATE EVACUATION REQUIRED"
+        elif risk_score > 0.8:
+            severity = "HIGH"
+            action = "EVACUATION ADVISED"
+        elif risk_score > 0.7:
+            severity = "MODERATE"
+            action = "MONITOR CLOSELY"
+        else:
+            severity = "LOW"
+            action = "CONTINUE MONITORING"
+            
+        return f"🚨 {severity} ALERT: {alert_type} detected in {location}. Risk Level: {risk_percentage}%. {action}. Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        
+    def create_email_subject(self, alert_type: str, severity: str) -> str:
+        """Create email subject line"""
+        return f"[{severity}] Coastal Threat Alert: {alert_type}"
+        
+    async def process_risk_alerts(self, data: Dict[str, Any], contacts: List[Dict[str, str]]) -> List[Dict[str, Any]]:
+        """Process risk alerts and send notifications"""
+        results = []
+        
+        if data.get('risk_score', 0) > 0.7:  # High risk threshold
+            alert_type = "High Risk Condition"
+            location = data.get('location', 'Unknown')
+            risk_score = data.get('risk_score', 0)
+            
+            # Create alert message
+            message = self.create_alert_message(alert_type, location, risk_score)
+            subject = self.create_email_subject(alert_type, "HIGH")
+            
+            # Send SMS alerts to subscribers
+            subscriber_results = await self.send_bulk_sms_to_subscribers(message, "alert")
+            results.append({
+                "type": "subscriber_sms",
+                "result": subscriber_results
+            })
+            
+            # Send SMS alerts to provided contacts
+            if self.sms_enabled and contacts:
+                sms_results = await self.send_bulk_sms(contacts, message)
+                results.append({
+                    "type": "contact_sms",
+                    "result": sms_results
+                })
+                
+            # Send email alerts
+            if self.email_enabled and contacts:
+                email_results = await self.send_bulk_emails(contacts, subject, message)
+                results.append({
+                    "type": "email",
+                    "result": email_results
+                })
+                
+        return results
+        
+    async def import_contacts_from_file(self, file_path: str) -> List[Dict[str, str]]:
+        """Import contacts from CSV/Excel file"""
+        try:
+            if file_path.endswith('.csv'):
+                df = pd.read_csv(file_path)
+            else:
+                df = pd.read_excel(file_path)
+                
+            contacts = []
+            for _, row in df.iterrows():
+                contact = {}
+                if 'name' in df.columns:
+                    contact['name'] = str(row['name'])
+                if 'email' in df.columns:
+                    contact['email'] = str(row['email'])
+                if 'phone' in df.columns:
+                    contact['phone'] = str(row['phone'])
+                    
+                if contact.get('email') or contact.get('phone'):
+                    contacts.append(contact)
+                    
+            logger.info(f"Imported {len(contacts)} contacts from {file_path}")
+            return contacts
+            
+        except Exception as e:
+            logger.error(f"Failed to import contacts: {e}")
+            return []
+
+# Global instance
 notification_service = NotificationService()
-
-

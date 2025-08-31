@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Upload as UploadIcon, Link, FileText, Database, AlertCircle, BarChart3, TrendingUp, Brain } from 'lucide-react';
 import toast from 'react-hot-toast';
-import AnalysisCharts from '../components/AnalysisCharts.tsx';
+import AnalysisCharts from '../components/AnalysisCharts';
 
 const Upload: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'file' | 'api'>('file');
@@ -68,22 +68,56 @@ const Upload: React.FC = () => {
       const result = await response.json();
       setUploadProgress(100);
       
-      toast.success('File uploaded successfully! AI analysis in progress...');
+      toast.success('File uploaded successfully! Processing...');
       
-      // Wait for processing and get analysis
-      setTimeout(async () => {
+      // Poll for processing progress
+      const pollProgress = async (datasetId: string) => {
         try {
-          const analysisResponse = await fetch(`http://localhost:8000/api/v1/ml/analyze-dataset/${result.dataset_id}`);
-          if (analysisResponse.ok) {
-            const analysis = await analysisResponse.json();
-            setAnalysisResult(analysis);
-            setShowAnalysis(true);
-            toast.success('AI analysis completed!');
+          const statusResponse = await fetch(`http://localhost:8000/api/v1/upload/status/${datasetId}`);
+          if (statusResponse.ok) {
+            const status = await statusResponse.json();
+            
+            if (status.progress_percentage !== undefined) {
+              setUploadProgress(Math.max(90, status.progress_percentage));
+            }
+            
+            if (status.status === 'completed') {
+              setUploadProgress(100);
+              toast.success('Processing completed!');
+              
+              // Get analysis after completion
+              setTimeout(async () => {
+                try {
+                  const analysisResponse = await fetch(`http://localhost:8000/api/v1/ml/analyze-dataset/${datasetId}`);
+                  if (analysisResponse.ok) {
+                    const analysis = await analysisResponse.json();
+                    setAnalysisResult(analysis);
+                    setShowAnalysis(true);
+                    toast.success('AI analysis completed!');
+                  }
+                } catch (error) {
+                  console.error('Analysis error:', error);
+                }
+              }, 1000);
+              
+              return true; // Stop polling
+            } else if (status.status === 'failed') {
+              toast.error('Processing failed');
+              return true; // Stop polling
+            } else {
+              // Continue polling
+              setTimeout(() => pollProgress(datasetId), 1000);
+            }
           }
         } catch (error) {
-          console.error('Analysis error:', error);
+          console.error('Status check error:', error);
+          setTimeout(() => pollProgress(datasetId), 2000);
         }
-      }, 3000);
+        return false;
+      };
+      
+      // Start polling
+      await pollProgress(result.dataset_id);
 
     } catch (error: any) {
       console.error('Upload error:', error);

@@ -5,13 +5,14 @@ import { Toaster } from 'react-hot-toast';
 import './App.css';
 
 // Components
-import Layout from './components/Layout.tsx';
-import Dashboard from './pages/Dashboard.tsx';
-import Upload from './pages/Upload.tsx';
-import Datasets from './pages/Datasets.tsx';
-import Alerts from './pages/Alerts.tsx';
-import MLModels from './pages/MLModels.tsx';
-import Settings from './pages/Settings.tsx';
+import Layout from './components/Layout';
+import Dashboard from './pages/Dashboard_new';
+import Upload from './pages/Upload';
+import Datasets from './pages/Datasets';
+import Alerts from './pages/Alerts';
+import MLModels from './pages/MLModels';
+import Settings from './pages/Settings';
+// ...
 
 // Create a client
 const queryClient = new QueryClient({

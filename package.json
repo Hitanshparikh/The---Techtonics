@@ -1,0 +1,9 @@
+{
+  "dependencies": {
+    "react-countup": "^6.5.3"
+  },
+  "devDependencies": {
+    "@types/leaflet": "^1.9.20",
+    "@types/node": "^24.3.0"
+  }
+}

@@ -1,54 +1,49 @@
-from pydantic_settings import BaseSettings
-from typing import Optional
 import os
+from pathlib import Path
+from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     # Database
-    DATABASE_URL: str = "sqlite+aiosqlite:///./coastal_threats.db"
+    DATABASE_URL: str = "sqlite:///./coastal_threats.db"
     
     # Security
-    SECRET_KEY: str = "your-super-secret-key-change-in-production"
-    API_KEY: str = "your-api-key-change-in-production"
+    SECRET_KEY: str = "your-secret-key-change-in-production"
+    ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     
     # Environment
     ENVIRONMENT: str = "development"
     DEBUG: bool = True
     
-    # API Configuration
+    # API
     API_V1_STR: str = "/api/v1"
     PROJECT_NAME: str = "AI Coastal Threat Alert System"
+    VERSION: str = "1.0.0"
     
     # File Upload
-    MAX_FILE_SIZE: int = 50 * 1024 * 1024  # 50MB
-    UPLOAD_DIR: str = "data/uploads"
+    UPLOAD_DIR: str = "./data/uploads"
+    MAX_FILE_SIZE: int = 10 * 1024 * 1024  # 10MB
     ALLOWED_EXTENSIONS: list = [".csv", ".xlsx", ".xls"]
     
     # ML Model
-    MODEL_PATH: str = "data/models"
-    RETRAIN_THRESHOLD: int = 1000  # Retrain after 1000 new records
+    MODEL_PATH: str = "./data/models"
+    MODEL_UPDATE_INTERVAL: int = 3600  # 1 hour
     
     # Notifications
     SMS_ENABLED: bool = True
     EMAIL_ENABLED: bool = True
-    ALERT_THRESHOLD: float = 0.7  # Risk score threshold for alerts
+    ALERT_THRESHOLD: float = 0.7
     
     # Redis (for future use)
-    REDIS_URL: Optional[str] = "redis://localhost:6379"
-    
-    # External APIs
-    WEATHER_API_KEY: Optional[str] = None
-    SMS_API_KEY: Optional[str] = None
-    EMAIL_API_KEY: Optional[str] = None
+    REDIS_URL: str = "redis://localhost:6379"
     
     class Config:
         env_file = ".env"
-        case_sensitive = True
+    
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        # Ensure directories exist
+        Path(self.UPLOAD_DIR).mkdir(parents=True, exist_ok=True)
+        Path(self.MODEL_PATH).mkdir(parents=True, exist_ok=True)
 
-# Create settings instance
 settings = Settings()
-
-# Ensure directories exist
-os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
-os.makedirs(settings.MODEL_PATH, exist_ok=True)
-
-

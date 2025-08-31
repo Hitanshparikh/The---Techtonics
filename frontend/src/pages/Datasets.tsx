@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Database, FileText, BarChart3, AlertTriangle, TrendingUp, Calendar, MapPin } from 'lucide-react';
-import AnalysisCharts from '../components/AnalysisCharts.tsx';
+import AnalysisCharts from '../components/AnalysisCharts';
 
 interface Dataset {
   id: string;
